@@ -151,7 +151,6 @@ void ThrowWrappedBootstrapMethodError(const char* fmt, ...) {
 // ClassCastException
 
 void ThrowClassCastException(ObjPtr<mirror::Class> dest_type, ObjPtr<mirror::Class> src_type) {
-  DumpB77342775DebugData(dest_type, src_type);
   ThrowException("Ljava/lang/ClassCastException;", nullptr,
                  StringPrintf("%s cannot be cast to %s",
                               mirror::Class::PrettyDescriptor(src_type).c_str(),
@@ -257,29 +256,13 @@ void ThrowIllegalStateException(const char* msg) {
 
 // IncompatibleClassChangeError
 
-void ThrowIncompatibleClassChangeError(InvokeType expected_type, InvokeType found_type,
-                                       ArtMethod* method, ArtMethod* referrer) {
+void ThrowIncompatibleClassChangeError(InvokeType expected_type,
+                                       InvokeType found_type,
+                                       ArtMethod* method,
+                                       ArtMethod* referrer) {
   std::ostringstream msg;
   msg << "The method '" << ArtMethod::PrettyMethod(method) << "' was expected to be of type "
       << expected_type << " but instead was found to be of type " << found_type;
-  ThrowException("Ljava/lang/IncompatibleClassChangeError;",
-                 referrer != nullptr ? referrer->GetDeclaringClass() : nullptr,
-                 msg.str().c_str());
-}
-
-void ThrowIncompatibleClassChangeErrorClassForInterfaceSuper(ArtMethod* method,
-                                                             ObjPtr<mirror::Class> target_class,
-                                                             ObjPtr<mirror::Object> this_object,
-                                                             ArtMethod* referrer) {
-  // Referrer is calling interface_method on this_object, however, the interface_method isn't
-  // implemented by this_object.
-  CHECK(this_object != nullptr);
-  std::ostringstream msg;
-  msg << "Class '" << mirror::Class::PrettyDescriptor(this_object->GetClass())
-      << "' does not implement interface '" << mirror::Class::PrettyDescriptor(target_class)
-      << "' in call to '"
-      << ArtMethod::PrettyMethod(method) << "'";
-  DumpB77342775DebugData(target_class, this_object->GetClass());
   ThrowException("Ljava/lang/IncompatibleClassChangeError;",
                  referrer != nullptr ? referrer->GetDeclaringClass() : nullptr,
                  msg.str().c_str());
@@ -296,13 +279,13 @@ void ThrowIncompatibleClassChangeErrorClassForInterfaceDispatch(ArtMethod* inter
       << "' does not implement interface '"
       << mirror::Class::PrettyDescriptor(interface_method->GetDeclaringClass())
       << "' in call to '" << ArtMethod::PrettyMethod(interface_method) << "'";
-  DumpB77342775DebugData(interface_method->GetDeclaringClass(), this_object->GetClass());
   ThrowException("Ljava/lang/IncompatibleClassChangeError;",
                  referrer != nullptr ? referrer->GetDeclaringClass() : nullptr,
                  msg.str().c_str());
 }
 
-void ThrowIncompatibleClassChangeErrorField(ArtField* resolved_field, bool is_static,
+void ThrowIncompatibleClassChangeErrorField(ArtField* resolved_field,
+                                            bool is_static,
                                             ArtMethod* referrer) {
   std::ostringstream msg;
   msg << "Expected '" << ArtField::PrettyField(resolved_field) << "' to be a "

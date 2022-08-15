@@ -332,42 +332,13 @@ extern "C" size_t NterpGetMethod(Thread* self, ArtMethod* caller, uint16_t* dex_
     return 0;
   }
 
-  // ResolveMethod returns the method based on the method_id. For super invokes
-  // we must use the executing class's context to find the right method.
   if (invoke_type == kSuper) {
-    ObjPtr<mirror::Class> executing_class = caller->GetDeclaringClass();
-    ObjPtr<mirror::Class> referenced_class = class_linker->LookupResolvedType(
-        executing_class->GetDexFile().GetMethodId(method_index).class_idx_,
-        executing_class->GetDexCache(),
-        executing_class->GetClassLoader());
-    DCHECK(referenced_class != nullptr);  // We have already resolved a method from this class.
-    if (!referenced_class->IsAssignableFrom(executing_class)) {
-      // We cannot determine the target method.
-      ThrowNoSuchMethodError(invoke_type,
-                             resolved_method->GetDeclaringClass(),
-                             resolved_method->GetName(),
-                             resolved_method->GetSignature());
+    resolved_method = caller->SkipAccessChecks()
+        ? FindSuperMethodToCall</*access_check=*/false>(method_index, resolved_method, caller, self)
+        : FindSuperMethodToCall</*access_check=*/true>(method_index, resolved_method, caller, self);
+    if (resolved_method == nullptr) {
+      DCHECK(self->IsExceptionPending());
       return 0;
-    }
-    if (referenced_class->IsInterface()) {
-      resolved_method = referenced_class->FindVirtualMethodForInterfaceSuper(
-          resolved_method, class_linker->GetImagePointerSize());
-    } else {
-      uint16_t vtable_index = resolved_method->GetMethodIndex();
-      ObjPtr<mirror::Class> super_class = executing_class->GetSuperClass();
-      if (super_class == nullptr ||
-          !super_class->HasVTable() ||
-          vtable_index >= static_cast<uint32_t>(super_class->GetVTableLength())) {
-        // Behavior to agree with that of the verifier.
-        ThrowNoSuchMethodError(invoke_type,
-                               resolved_method->GetDeclaringClass(),
-                               resolved_method->GetName(),
-                               resolved_method->GetSignature());
-        return 0;
-      } else {
-        resolved_method = executing_class->GetSuperClass()->GetVTableEntry(
-            vtable_index, class_linker->GetImagePointerSize());
-      }
     }
   }
 
@@ -466,13 +437,14 @@ extern "C" size_t NterpGetStaticField(Thread* self,
   const Instruction* inst = Instruction::At(dex_pc_ptr);
   uint16_t field_index = inst->VRegB_21c();
   ClassLinker* const class_linker = Runtime::Current()->GetClassLinker();
+  bool is_put = IsInstructionSPut(inst->Opcode());
   ArtField* resolved_field = ResolveFieldWithAccessChecks(
       self,
       class_linker,
       field_index,
       caller,
       /* is_static */ true,
-      /* is_put */ IsInstructionSPut(inst->Opcode()),
+      is_put,
       resolve_field_type);
 
   if (resolved_field == nullptr) {
@@ -495,7 +467,16 @@ extern "C" size_t NterpGetStaticField(Thread* self,
     // check for it.
     return reinterpret_cast<size_t>(resolved_field) | 1;
   } else {
-    UpdateCache(self, dex_pc_ptr, resolved_field);
+    // Try to resolve the field type even if we were not requested to. Only if
+    // the field type is successfully resolved can we update the cache. If we
+    // fail to resolve the type, we clear the exception to keep interpreter
+    // semantics of not throwing when null is stored.
+    if (is_put && resolve_field_type == 0 && resolved_field->ResolveType() == nullptr) {
+      DCHECK(self->IsExceptionPending());
+      self->ClearException();
+    } else {
+      UpdateCache(self, dex_pc_ptr, resolved_field);
+    }
     return reinterpret_cast<size_t>(resolved_field);
   }
 }
@@ -509,13 +490,14 @@ extern "C" uint32_t NterpGetInstanceFieldOffset(Thread* self,
   const Instruction* inst = Instruction::At(dex_pc_ptr);
   uint16_t field_index = inst->VRegC_22c();
   ClassLinker* const class_linker = Runtime::Current()->GetClassLinker();
+  bool is_put = IsInstructionIPut(inst->Opcode());
   ArtField* resolved_field = ResolveFieldWithAccessChecks(
       self,
       class_linker,
       field_index,
       caller,
       /* is_static */ false,
-      /* is_put */ IsInstructionIPut(inst->Opcode()),
+      is_put,
       resolve_field_type);
   if (resolved_field == nullptr) {
     DCHECK(self->IsExceptionPending());
@@ -526,7 +508,16 @@ extern "C" uint32_t NterpGetInstanceFieldOffset(Thread* self,
     // of volatile.
     return -resolved_field->GetOffset().Uint32Value();
   }
-  UpdateCache(self, dex_pc_ptr, resolved_field->GetOffset().Uint32Value());
+  // Try to resolve the field type even if we were not requested to. Only if
+  // the field type is successfully resolved can we update the cache. If we
+  // fail to resolve the type, we clear the exception to keep interpreter
+  // semantics of not throwing when null is stored.
+  if (is_put && resolve_field_type == 0 && resolved_field->ResolveType() == nullptr) {
+    DCHECK(self->IsExceptionPending());
+    self->ClearException();
+  } else {
+    UpdateCache(self, dex_pc_ptr, resolved_field->GetOffset().Uint32Value());
+  }
   return resolved_field->GetOffset().Uint32Value();
 }
 

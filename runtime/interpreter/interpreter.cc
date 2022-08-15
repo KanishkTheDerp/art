@@ -290,9 +290,32 @@ static inline JValue Execute(
       CHECK_EQ(shadow_frame.GetDexPC(), 0u);
       self->AssertNoPendingException();
     }
-    instrumentation::Instrumentation* instrumentation = Runtime::Current()->GetInstrumentation();
     ArtMethod *method = shadow_frame.GetMethod();
 
+    // If we can continue in JIT and have JITed code available execute JITed code.
+    if (!stay_in_interpreter && !self->IsForceInterpreter()) {
+      jit::Jit* jit = Runtime::Current()->GetJit();
+      if (jit != nullptr) {
+        jit->MethodEntered(self, shadow_frame.GetMethod());
+        if (jit->CanInvokeCompiledCode(method)) {
+          JValue result;
+
+          // Pop the shadow frame before calling into compiled code.
+          self->PopShadowFrame();
+          // Calculate the offset of the first input reg. The input registers are in the high regs.
+          // It's ok to access the code item here since JIT code will have been touched by the
+          // interpreter and compiler already.
+          uint16_t arg_offset = accessor.RegistersSize() - accessor.InsSize();
+          ArtInterpreterToCompiledCodeBridge(self, nullptr, &shadow_frame, arg_offset, &result);
+          // Push the shadow frame back as the caller will expect it.
+          self->PushShadowFrame(&shadow_frame);
+
+          return result;
+        }
+      }
+    }
+
+    instrumentation::Instrumentation* instrumentation = Runtime::Current()->GetInstrumentation();
     if (UNLIKELY(instrumentation->HasMethodEntryListeners())) {
       instrumentation->MethodEnterEvent(self, method);
       if (UNLIKELY(shadow_frame.GetForcePopFrame())) {
@@ -316,28 +339,6 @@ static inline JValue Execute(
               self, shadow_frame, ret, instrumentation, accessor.InsSize());
         }
         return ret;
-      }
-    }
-
-    if (!stay_in_interpreter && !self->IsForceInterpreter()) {
-      jit::Jit* jit = Runtime::Current()->GetJit();
-      if (jit != nullptr) {
-        jit->MethodEntered(self, shadow_frame.GetMethod());
-        if (jit->CanInvokeCompiledCode(method)) {
-          JValue result;
-
-          // Pop the shadow frame before calling into compiled code.
-          self->PopShadowFrame();
-          // Calculate the offset of the first input reg. The input registers are in the high regs.
-          // It's ok to access the code item here since JIT code will have been touched by the
-          // interpreter and compiler already.
-          uint16_t arg_offset = accessor.RegistersSize() - accessor.InsSize();
-          ArtInterpreterToCompiledCodeBridge(self, nullptr, &shadow_frame, arg_offset, &result);
-          // Push the shadow frame back as the caller will expect it.
-          self->PushShadowFrame(&shadow_frame);
-
-          return result;
-        }
       }
     }
   }
@@ -540,7 +541,7 @@ void EnterInterpreterFromDeoptimize(Thread* self,
       const Instruction* instr = &accessor.InstructionAt(dex_pc);
       if (deopt_method_type == DeoptimizationMethodType::kKeepDexPc ||
           shadow_frame->GetForceRetryInstruction()) {
-        DCHECK(frame_cnt == 0 || (frame_cnt == 1 && shadow_frame->GetForceRetryInstruction()))
+        DCHECK(frame_cnt == 0 || shadow_frame->GetForceRetryInstruction())
             << "frame_cnt: " << frame_cnt
             << " force-retry: " << shadow_frame->GetForceRetryInstruction();
         // Need to re-execute the dex instruction.

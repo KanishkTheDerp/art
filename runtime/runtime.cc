@@ -141,6 +141,7 @@
 #include "native/java_lang_reflect_Parameter.h"
 #include "native/java_lang_reflect_Proxy.h"
 #include "native/java_util_concurrent_atomic_AtomicLong.h"
+#include "native/libcore_io_Memory.h"
 #include "native/libcore_util_CharsetUtils.h"
 #include "native/org_apache_harmony_dalvik_ddmc_DdmServer.h"
 #include "native/org_apache_harmony_dalvik_ddmc_DdmVmInternal.h"
@@ -709,7 +710,9 @@ void Runtime::PostZygoteFork() {
     // Ensure that the threads in the JIT pool have been created with the right
     // priority.
     if (kIsDebugBuild && jit->GetThreadPool() != nullptr) {
-      jit->GetThreadPool()->CheckPthreadPriority(jit->GetThreadPoolPthreadPriority());
+      jit->GetThreadPool()->CheckPthreadPriority(
+          IsZygote() ? jit->GetZygoteThreadPoolPthreadPriority()
+                     : jit->GetThreadPoolPthreadPriority());
     }
   }
   // Reset all stats.
@@ -1673,7 +1676,7 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   // Change the implicit checks flags based on runtime architecture.
   switch (kRuntimeISA) {
     case InstructionSet::kArm64:
-      implicit_suspend_checks_ = true;
+      implicit_suspend_checks_ = false;
       FALLTHROUGH_INTENDED;
     case InstructionSet::kArm:
     case InstructionSet::kThumb2:
@@ -2203,6 +2206,7 @@ void Runtime::RegisterRuntimeNativeMethods(JNIEnv* env) {
   register_java_lang_Throwable(env);
   register_java_lang_VMClassLoader(env);
   register_java_util_concurrent_atomic_AtomicLong(env);
+  register_libcore_io_Memory(env);
   register_libcore_util_CharsetUtils(env);
   register_org_apache_harmony_dalvik_ddmc_DdmServer(env);
   register_org_apache_harmony_dalvik_ddmc_DdmVmInternal(env);
@@ -3287,6 +3291,14 @@ void Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
                                   const uint8_t* map_begin,
                                   const uint8_t* map_end,
                                   const std::string& file_name) {
+  // Short-circuit the madvise optimization for background processes. This
+  // avoids IO and memory contention with foreground processes, particularly
+  // those involving app startup.
+  const Runtime* runtime = Runtime::Current();
+  if (runtime != nullptr && !runtime->InJankPerceptibleProcessState()) {
+    return;
+  }
+
   // Ideal blockTransferSize for madvising files (128KiB)
   static constexpr size_t kIdealIoTransferSizeBytes = 128*1024;
 
